@@ -1,107 +1,35 @@
-name: 4. Build Loop
-run-name: Build Loop (${{ github.ref_name }})
+name: Build Loop IPA
+run-name: Build Loop IPA (${{ github.ref_name }})
 
 on:
-  workflow_dispatch:
-  #push:
-  schedule:
-    - cron: "33 9 * * 3"
-    - cron: "33 7 1 * *"
-
-env:
-  UPSTREAM_REPO: LoopKit/LoopWorkspace
-  UPSTREAM_BRANCH: ${{ github.ref_name }}
-  TARGET_BRANCH: ${{ github.ref_name }}
-  ALIVE_BRANCH_MAIN: alive-main
-  ALIVE_BRANCH_DEV: alive-dev
+  workflow_dispatch: # manual run
 
 jobs:
-  check_certs: 
-    name: Check certificates
-    uses: ./.github/workflows/create_certs.yml
-    secrets: inherit
-
-  check_alive_and_permissions:
-    needs: check_certs
-    runs-on: ubuntu-latest
-    name: Check alive branch and permissions
-    permissions:
-      contents: write
-    outputs:
-      WORKFLOW_PERMISSION: ${{ steps.workflow-permission.outputs.has_permission }}
-    steps:
-      - name: Check for workflow permissions
-        id: workflow-permission
-        env:
-          TOKEN_TO_CHECK: ${{ secrets.GH_PAT }}
-        run: |
-          PERMISSIONS=$(curl -sS -f -I -H "Authorization: token ${{ env.TOKEN_TO_CHECK }}" https://api.github.com | grep ^x-oauth-scopes: | cut -d' ' -f2-);
-          if [[ $PERMISSIONS =~ "workflow" || $PERMISSIONS == "" ]]; then
-            echo "has_permission=true" >> $GITHUB_OUTPUT
-          else 
-            echo "has_permission=false" >> $GITHUB_OUTPUT
-          fi
-
-  check_latest_from_upstream:
-    needs: [check_certs, check_alive_and_permissions]
-    runs-on: ubuntu-latest
-    name: Check upstream and keep alive
-    outputs:
-      NEW_COMMITS: ${{ steps.sync.outputs.has_new_commits }}
-      ABORT_SYNC: ${{ steps.check_branch.outputs.ABORT_SYNC }}
-    steps:
-      - name: Check if running on main or dev branch
-        id: check_branch
-        run: |
-          if [ "${GITHUB_REF##*/}" = "main" ]; then
-            echo "ABORT_SYNC=false" >> $GITHUB_OUTPUT
-          elif [ "${GITHUB_REF##*/}" = "dev" ]; then
-            echo "ABORT_SYNC=false" >> $GITHUB_OUTPUT
-          else
-            echo "ABORT_SYNC=true" >> $GITHUB_OUTPUT
-          fi
-
   build:
-    name: Build
-    needs: [check_certs, check_alive_and_permissions, check_latest_from_upstream]
     runs-on: macos-15
-    permissions:
-      contents: write
-    if: github.event_name == 'workflow_dispatch'
     steps:
       - name: Select Xcode version
-        run: "sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer"
+        run: sudo xcode-select --switch /Applications/Xcode_16.4.app/Contents/Developer
 
       - name: Checkout Repo
         uses: actions/checkout@v4
         with:
-          token: ${{ secrets.GH_PAT }}
           submodules: recursive
-          ref: ${{ env.TARGET_BRANCH }}
 
-      - name: Install Project Dependencies
+      - name: Install Dependencies
         run: bundle install
 
-      - name: Sync clock
+      - name: Sync clock (workaround for signing issues)
         run: sudo sntp -sS time.windows.com
 
-      - name: Fastlane Build & Archive
+      - name: Build IPA (unsigned)
         run: bundle exec fastlane build_loop
         env:
+          # remove TestFlight keys, just need signing identity/profiles handled by Xcode
           TEAMID: ${{ secrets.TEAMID }}
-          GH_PAT: ${{ secrets.GH_PAT }}
-          FASTLANE_KEY_ID: ${{ secrets.FASTLANE_KEY_ID }}
-          FASTLANE_ISSUER_ID: ${{ secrets.FASTLANE_ISSUER_ID }}
-          FASTLANE_KEY: ${{ secrets.FASTLANE_KEY }}
-          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
 
-      # ✅ Removed TestFlight upload step
-
-      - name: Upload build log, IPA and Symbol artifacts
-        if: always()
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: build-artifacts
-          path: |
-            artifacts
-            buildlog
+          name: loop-ipa
+          path: artifacts/*.ipa
